@@ -2248,6 +2248,169 @@
                 }
             }
 
+            function unfoldICSLines(rawText) {
+                const lines = rawText.split(/\r?\n/);
+                const unfolded = [];
+
+                for (let index = 0; index < lines.length; index += 1) {
+                    let line = lines[index];
+
+                    while (index + 1 < lines.length && lines[index + 1].startsWith(' ')) {
+                        index += 1;
+                        line += lines[index].slice(1);
+                    }
+
+                    unfolded.push(line);
+                }
+
+                return unfolded;
+            }
+
+            function parseICSDate(value, timeZone) {
+                if (!value || typeof value !== 'string') {
+                    return null;
+                }
+
+                const hasUTCDesignator = value.endsWith('Z');
+                const [datePart, timePartRaw = ''] = value.split('T');
+
+                if (!datePart || datePart.length !== 8) {
+                    return null;
+                }
+
+                const year = Number.parseInt(datePart.slice(0, 4), 10);
+                const month = Number.parseInt(datePart.slice(4, 6), 10) - 1;
+                const day = Number.parseInt(datePart.slice(6, 8), 10);
+
+                if (Number.isNaN(year) || Number.isNaN(month) || Number.isNaN(day)) {
+                    return null;
+                }
+
+                let hours = 0;
+                let minutes = 0;
+                let seconds = 0;
+
+                if (timePartRaw) {
+                    const timePart = timePartRaw.replace(/Z$/, '');
+                    hours = Number.parseInt(timePart.slice(0, 2) || '0', 10);
+                    minutes = Number.parseInt(timePart.slice(2, 4) || '0', 10);
+                    seconds = Number.parseInt(timePart.slice(4, 6) || '0', 10);
+                }
+
+                if (Number.isNaN(hours) || Number.isNaN(minutes) || Number.isNaN(seconds)) {
+                    return null;
+                }
+
+                if (hasUTCDesignator) {
+                    return new Date(Date.UTC(year, month, day, hours, minutes, seconds));
+                }
+
+                const naiveLocalDate = new Date(year, month, day, hours, minutes, seconds);
+
+                if (!timeZone) {
+                    return Number.isNaN(naiveLocalDate.getTime()) ? null : naiveLocalDate;
+                }
+
+                try {
+                    const baseUtc = Date.UTC(year, month, day, hours, minutes, seconds);
+                    const formatter = new Intl.DateTimeFormat('en-US', {
+                        timeZone,
+                        year: 'numeric',
+                        month: '2-digit',
+                        day: '2-digit',
+                        hour: '2-digit',
+                        minute: '2-digit',
+                        second: '2-digit',
+                        hour12: false
+                    });
+
+                    const parts = formatter.formatToParts(new Date(baseUtc)).reduce((accumulator, part) => {
+                        if (part.type !== 'literal') {
+                            accumulator[part.type] = part.value;
+                        }
+                        return accumulator;
+                    }, {});
+
+                    const zonedUtc = Date.UTC(
+                        Number.parseInt(parts.year, 10),
+                        Number.parseInt(parts.month, 10) - 1,
+                        Number.parseInt(parts.day, 10),
+                        Number.parseInt(parts.hour, 10),
+                        Number.parseInt(parts.minute, 10),
+                        Number.parseInt(parts.second, 10)
+                    );
+
+                    if (Number.isNaN(zonedUtc)) {
+                        return Number.isNaN(naiveLocalDate.getTime()) ? null : naiveLocalDate;
+                    }
+
+                    const offset = zonedUtc - baseUtc;
+                    return new Date(baseUtc - offset);
+                } catch (error) {
+                    return Number.isNaN(naiveLocalDate.getTime()) ? null : naiveLocalDate;
+                }
+            }
+
+            function parseICSEventDate(line) {
+                const [, meta = '', value = ''] = line.match(/^(?:DTSTART|DTEND)(?:;([^:]+))?:(.+)$/) || [];
+                const tzidMatch = meta.match(/TZID=([^;]+)/);
+                return parseICSDate(value, tzidMatch ? tzidMatch[1] : null);
+            }
+
+            async function fetchCalendarEventsFromICS(timeMin, timeMax) {
+                const calendarPath = `${encodeURIComponent(CALENDAR_ID)}/public/full.ics`;
+                const icsUrl = `https://calendar.google.com/calendar/ical/${calendarPath}`;
+                const response = await fetch(icsUrl, {
+                    headers: {
+                        Accept: 'text/calendar, text/plain'
+                    }
+                });
+
+                if (!response.ok) {
+                    const errorText = await response.text().catch(() => '');
+                    throw new Error(errorText || `ICS request failed with status ${response.status}`);
+                }
+
+                const raw = await response.text();
+                const lines = unfoldICSLines(raw);
+                const minTime = new Date(timeMin);
+                const maxTime = new Date(timeMax);
+                const events = [];
+                let currentEvent = null;
+
+                lines.forEach(line => {
+                    if (line === 'BEGIN:VEVENT') {
+                        currentEvent = { start: null, end: null, cancelled: false };
+                    } else if (line === 'END:VEVENT') {
+                        if (currentEvent && !currentEvent.cancelled && currentEvent.start instanceof Date && currentEvent.end instanceof Date) {
+                            events.push(currentEvent);
+                        }
+                        currentEvent = null;
+                    } else if (currentEvent) {
+                        if (line.startsWith('DTSTART')) {
+                            currentEvent.start = parseICSEventDate(line);
+                        } else if (line.startsWith('DTEND')) {
+                            currentEvent.end = parseICSEventDate(line);
+                        } else if (line.startsWith('STATUS:CANCELLED')) {
+                            currentEvent.cancelled = true;
+                        }
+                    }
+                });
+
+                return events
+                    .filter(event => {
+                        if (!(event.start instanceof Date) || !(event.end instanceof Date)) {
+                            return false;
+                        }
+
+                        return event.end.getTime() > minTime.getTime() && event.start.getTime() < maxTime.getTime();
+                    })
+                    .map(event => ({
+                        start: event.start,
+                        end: event.end
+                    }));
+            }
+
             async function fetchCalendarEvents(timeMin, timeMax) {
                 const endpoint = new URL(`https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(CALENDAR_ID)}/events`);
                 endpoint.searchParams.set('singleEvents', 'true');
@@ -2259,24 +2422,36 @@
                     endpoint.searchParams.set('key', API_KEY);
                 }
 
-                const response = await fetch(endpoint.toString());
-                if (!response.ok) {
-                    const errorText = await response.text().catch(() => '');
-                    throw new Error(errorText || `Calendar request failed with status ${response.status}`);
-                }
+                try {
+                    const response = await fetch(endpoint.toString());
+                    if (!response.ok) {
+                        const errorText = await response.text().catch(() => '');
+                        throw new Error(errorText || `Calendar request failed with status ${response.status}`);
+                    }
 
-                const data = await response.json();
-                if (!data || !Array.isArray(data.items)) {
-                    return [];
-                }
+                    const data = await response.json();
+                    if (!data || !Array.isArray(data.items)) {
+                        return [];
+                    }
 
-                return data.items
-                    .filter(item => item && item.status !== 'cancelled')
-                    .map(item => ({
-                        start: normaliseEventDate(item.start?.dateTime || item.start?.date),
-                        end: normaliseEventDate(item.end?.dateTime || item.end?.date)
-                    }))
-                    .filter(event => event.start instanceof Date && !Number.isNaN(event.start) && event.end instanceof Date && !Number.isNaN(event.end));
+                    return data.items
+                        .filter(item => item && item.status !== 'cancelled')
+                        .map(item => ({
+                            start: normaliseEventDate(item.start?.dateTime || item.start?.date),
+                            end: normaliseEventDate(item.end?.dateTime || item.end?.date)
+                        }))
+                        .filter(event => event.start instanceof Date && !Number.isNaN(event.start) && event.end instanceof Date && !Number.isNaN(event.end));
+                } catch (apiError) {
+                    console.warn('Falling back to public ICS feed for availability data', apiError);
+
+                    try {
+                        return await fetchCalendarEventsFromICS(timeMin, timeMax);
+                    } catch (icsError) {
+                        const combinedError = new Error('All availability sources failed');
+                        combinedError.cause = { apiError, icsError };
+                        throw combinedError;
+                    }
+                }
             }
 
             function slotConflicts(slotStart, slotEnd, events) {
