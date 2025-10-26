@@ -1289,6 +1289,16 @@
             font-size: 0.9rem;
         }
 
+        .booking-suggestions {
+            margin: 12px 0;
+            padding-left: 22px;
+            color: rgba(255, 255, 255, 0.85);
+        }
+
+        .booking-suggestions li {
+            margin-bottom: 6px;
+        }
+
         /* Footer */
         footer {
             background-color: var(--primary-dark);
@@ -2369,6 +2379,35 @@
                 }
             }
 
+            function getManualSuggestionDates(referenceDate) {
+                const anchor = new Date(referenceDate);
+                anchor.setHours(18, 0, 0, 0);
+
+                const currentDay = anchor.getDay();
+                const daysUntilNextMonday = ((8 - currentDay) % 7) || 7;
+
+                const nextMonday = new Date(anchor);
+                nextMonday.setDate(anchor.getDate() + daysUntilNextMonday);
+
+                const nextWednesday = new Date(nextMonday);
+                nextWednesday.setDate(nextMonday.getDate() + 2);
+
+                const followingMonday = new Date(nextMonday);
+                followingMonday.setDate(nextMonday.getDate() + 7);
+
+                return [nextMonday, nextWednesday, followingMonday];
+            }
+
+            function formatManualSuggestion(date) {
+                const dateLabel = date.toLocaleDateString(undefined, {
+                    weekday: 'long',
+                    month: 'long',
+                    day: 'numeric'
+                });
+
+                return `${dateLabel} between 6:00 pm and 8:00 pm`;
+            }
+
             async function loadAvailability() {
                 bookingDaysContainer.setAttribute('aria-busy', 'true');
                 bookingStatus.textContent = 'Checking the latest availability…';
@@ -2386,9 +2425,26 @@
                     console.error('Failed to load Google Calendar availability', error);
                     bookingStatus.textContent = 'We could not connect to Google Calendar. Please pick a preferred time and we will confirm manually.';
                     bookingDaysContainer.innerHTML = '';
-                    const fallback = document.createElement('p');
+                    const fallback = document.createElement('div');
                     fallback.className = 'booking-no-slots';
-                    fallback.textContent = 'Availability is temporarily offline. Share your best time and we will follow up right away.';
+
+                    const intro = document.createElement('p');
+                    intro.textContent = 'Availability is temporarily offline. In the meantime, here are a few evening slots we can hold for you next week:';
+                    fallback.appendChild(intro);
+
+                    const suggestions = document.createElement('ul');
+                    suggestions.className = 'booking-suggestions';
+                    getManualSuggestionDates(now).forEach(date => {
+                        const item = document.createElement('li');
+                        item.textContent = formatManualSuggestion(date);
+                        suggestions.appendChild(item);
+                    });
+                    fallback.appendChild(suggestions);
+
+                    const outro = document.createElement('p');
+                    outro.textContent = 'Send us the option that works best and we will confirm straight away.';
+                    fallback.appendChild(outro);
+
                     bookingDaysContainer.appendChild(fallback);
                 } finally {
                     bookingDaysContainer.removeAttribute('aria-busy');
