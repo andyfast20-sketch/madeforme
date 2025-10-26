@@ -1289,6 +1289,15 @@
             font-size: 0.9rem;
         }
 
+        .booking-manual-note {
+            margin-top: 16px;
+            padding: 12px 14px;
+            border-radius: 12px;
+            background: rgba(255, 255, 255, 0.16);
+            color: rgba(255, 255, 255, 0.9);
+            font-size: 0.9rem;
+        }
+
         .booking-suggestions {
             margin: 12px 0;
             padding-left: 22px;
@@ -2287,7 +2296,7 @@
                 return days;
             }
 
-            function renderDays(days) {
+            function renderDays(days, { updateStatus = true } = {}) {
                 bookingDaysContainer.innerHTML = '';
                 resetSlotSelection();
 
@@ -2369,13 +2378,15 @@
                     bookingDaysContainer.appendChild(dayCard);
                 });
 
-                const openSlots = days.reduce((count, day) => count + day.availableSlots.length, 0);
-                if (openSlots === 0) {
-                    bookingStatus.textContent = 'All available consultations are booked. Please choose another date or contact us for cancellations.';
-                } else if (openSlots <= 2) {
-                    bookingStatus.textContent = 'Only a couple of evening slots remain – reserve yours now.';
-                } else {
-                    bookingStatus.textContent = 'Select an evening slot that works for you.';
+                if (updateStatus) {
+                    const openSlots = days.reduce((count, day) => count + day.availableSlots.length, 0);
+                    if (openSlots === 0) {
+                        bookingStatus.textContent = 'All available consultations are booked. Please choose another date or contact us for cancellations.';
+                    } else if (openSlots <= 2) {
+                        bookingStatus.textContent = 'Only a couple of evening slots remain – reserve yours now.';
+                    } else {
+                        bookingStatus.textContent = 'Select an evening slot that works for you.';
+                    }
                 }
             }
 
@@ -2396,6 +2407,23 @@
                 followingMonday.setDate(nextMonday.getDate() + 7);
 
                 return [nextMonday, nextWednesday, followingMonday];
+            }
+
+            function buildManualFallbackDays(referenceDate) {
+                return getManualSuggestionDates(referenceDate)
+                    .map(date => {
+                        const slots = generateSlotsForDay(date, [], referenceDate).map(slot => ({
+                            ...slot,
+                            unavailable: false
+                        }));
+
+                        return {
+                            date: new Date(date),
+                            slots,
+                            availableSlots: slots
+                        };
+                    })
+                    .filter(day => day.availableSlots.length > 0);
             }
 
             function formatManualSuggestion(date) {
@@ -2423,29 +2451,41 @@
                     renderDays(days);
                 } catch (error) {
                     console.error('Failed to load Google Calendar availability', error);
-                    bookingStatus.textContent = 'We could not connect to Google Calendar. Please pick a preferred time and we will confirm manually.';
-                    bookingDaysContainer.innerHTML = '';
-                    const fallback = document.createElement('div');
-                    fallback.className = 'booking-no-slots';
+                    const fallbackDays = buildManualFallbackDays(now);
 
-                    const intro = document.createElement('p');
-                    intro.textContent = 'Availability is temporarily offline. In the meantime, here are a few evening slots we can hold for you next week:';
-                    fallback.appendChild(intro);
+                    if (fallbackDays.length) {
+                        bookingStatus.textContent = 'We could not connect to Google Calendar. Choose one of the evening slots below and we will confirm manually.';
+                        renderDays(fallbackDays, { updateStatus: false });
 
-                    const suggestions = document.createElement('ul');
-                    suggestions.className = 'booking-suggestions';
-                    getManualSuggestionDates(now).forEach(date => {
-                        const item = document.createElement('li');
-                        item.textContent = formatManualSuggestion(date);
-                        suggestions.appendChild(item);
-                    });
-                    fallback.appendChild(suggestions);
+                        const manualNotice = document.createElement('p');
+                        manualNotice.className = 'booking-manual-note';
+                        manualNotice.textContent = 'Submit your preferred time and our team will reserve the slot and confirm with you directly.';
+                        bookingDaysContainer.appendChild(manualNotice);
+                    } else {
+                        bookingStatus.textContent = 'We could not connect to Google Calendar. Please pick a preferred time and we will confirm manually.';
+                        bookingDaysContainer.innerHTML = '';
+                        const fallback = document.createElement('div');
+                        fallback.className = 'booking-no-slots';
 
-                    const outro = document.createElement('p');
-                    outro.textContent = 'Send us the option that works best and we will confirm straight away.';
-                    fallback.appendChild(outro);
+                        const intro = document.createElement('p');
+                        intro.textContent = 'Availability is temporarily offline. In the meantime, here are a few evening slots we can hold for you next week:';
+                        fallback.appendChild(intro);
 
-                    bookingDaysContainer.appendChild(fallback);
+                        const suggestions = document.createElement('ul');
+                        suggestions.className = 'booking-suggestions';
+                        getManualSuggestionDates(now).forEach(date => {
+                            const item = document.createElement('li');
+                            item.textContent = formatManualSuggestion(date);
+                            suggestions.appendChild(item);
+                        });
+                        fallback.appendChild(suggestions);
+
+                        const outro = document.createElement('p');
+                        outro.textContent = 'Send us the option that works best and we will confirm straight away.';
+                        fallback.appendChild(outro);
+
+                        bookingDaysContainer.appendChild(fallback);
+                    }
                 } finally {
                     bookingDaysContainer.removeAttribute('aria-busy');
                 }
